@@ -577,3 +577,350 @@
     inset: 0;
   }
 }
+
+/* ==== View switching ==== */
+.slider-view:not(.is-active),
+.grid-view:not(.is-active) {
+  pointer-events: none;
+}
+.slider-view:not(.is-active) .ticker,
+.slider-view.is-vertical .ticker {
+  transform: translateY(120%);
+}
+.slider-view:not(.is-active) .dial {
+  opacity: 0;
+}
+.ticker {
+  transition: transform 0.45s var(--ui-ease);
+}
+.dial {
+  transition: opacity 0.45s var(--ui-ease);
+}
+
+/* ==== Grid view ==== */
+.grid-view {
+  z-index: 1;
+  visibility: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  position: absolute;
+  inset: 0;
+}
+.grid-view.is-dragging {
+  cursor: grabbing;
+}
+
+.gv-cell {
+  visibility: hidden;
+  will-change: transform, opacity;
+  width: var(--gcell-w, 330px);
+  height: var(--gcell-h, 492px);
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+}
+.gv-cell img {
+  object-fit: cover;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+/* Edge rulers: 20px strips that slide in from each edge while the grid is showing. */
+.gticker {
+  --gticker-size: 20px;
+  --ruler-tick: #ffffff40;
+  z-index: 10;
+  pointer-events: none;
+  position: absolute;
+  overflow: hidden;
+}
+.gticker-top,
+.gticker-bottom {
+  left: var(--gticker-size);
+  right: var(--gticker-size);
+  height: var(--gticker-size);
+}
+.gticker-top {
+  top: 0;
+}
+.gticker-bottom {
+  bottom: 0;
+}
+.gticker-left,
+.gticker-right {
+  width: var(--gticker-size);
+  top: 0;
+  bottom: 0;
+}
+.gticker-left {
+  left: 0;
+}
+.gticker-right {
+  right: 0;
+}
+.gticker-strip {
+  width: 100%;
+  height: 100%;
+  transition: transform 0.45s var(--ui-ease);
+  position: relative;
+}
+.grid-view:not(.is-active) .gticker-top .gticker-strip {
+  transform: translateY(-100%);
+}
+.grid-view:not(.is-active) .gticker-bottom .gticker-strip {
+  transform: translateY(100%);
+}
+.grid-view:not(.is-active) .gticker-left .gticker-strip {
+  transform: translate(-100%);
+}
+.grid-view:not(.is-active) .gticker-right .gticker-strip {
+  transform: translate(100%);
+}
+
+/* One band spans a cell past each end so it can scroll a full cell without gaps.
+   Minor ticks every --ruler-*-step, a longer tick on each cell centre. */
+.gt-band {
+  will-change: transform;
+  background-repeat: repeat;
+  position: absolute;
+}
+.gticker-top .gt-band,
+.gticker-bottom .gt-band {
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--gcell-w));
+  right: calc(-1 * var(--gcell-w));
+  background-image:
+    repeating-linear-gradient(to right, var(--ruler-tick) 0 1px, transparent 1px var(--gcell-w)),
+    repeating-linear-gradient(to right, var(--ruler-tick) 0 1px, transparent 1px var(--ruler-x-step));
+  background-size: 100% 12px, 100% 6px;
+  background-repeat: repeat-x;
+  background-position: var(--ruler-x-origin) 0, var(--ruler-x-origin) 0;
+}
+.gticker-bottom .gt-band {
+  background-position: var(--ruler-x-origin) 100%, var(--ruler-x-origin) 100%;
+}
+.gticker-left .gt-band,
+.gticker-right .gt-band {
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--gcell-h));
+  bottom: calc(-1 * var(--gcell-h));
+  background-image:
+    repeating-linear-gradient(to bottom, var(--ruler-tick) 0 1px, transparent 1px var(--gcell-h)),
+    repeating-linear-gradient(to bottom, var(--ruler-tick) 0 1px, transparent 1px var(--ruler-y-step));
+  background-size: 12px 100%, 6px 100%;
+  background-repeat: repeat-y;
+  background-position: 0 var(--ruler-y-origin), 0 var(--ruler-y-origin);
+}
+.gticker-right .gt-band {
+  background-position: 100% var(--ruler-y-origin), 100% var(--ruler-y-origin);
+}
+
+/* Header meta for the centred cell, vertically centred on the screen */
+:root {
+  --vcaret-x: calc(8.33vw + 219px);
+}
+.meta-slot {
+  z-index: 20;
+  pointer-events: none;
+  align-items: center;
+  display: flex;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.meta-slot .reveal-mask {
+  display: block;
+}
+.meta {
+  letter-spacing: -0.02em;
+  color: #fff;
+  white-space: nowrap;
+  font-size: var(--ui-size);
+  line-height: 1.2;
+}
+.meta-line {
+  will-change: transform;
+  transform: translateY(110%);
+  transition: transform 0.45s var(--ui-ease);
+}
+.landing:is(.view-grid, .view-list) .meta-line {
+  transform: translateY(0);
+  transition: transform 0.9s cubic-bezier(0.215, 0.61, 0.355, 1) 0.9s;
+}
+.meta-index {
+  left: 39px;
+}
+.meta-name {
+  max-width: calc(var(--vcaret-x) - 8.33vw - 51px);
+  left: calc(8.33% + 35px);
+}
+.meta-name .meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.meta-type {
+  left: calc(75% - 4px);
+}
+.meta-tag {
+  left: calc(91.67% + 7px);
+}
+.meta-type .meta,
+.meta-tag .meta {
+  color: var(--gray-200);
+}
+
+@media (min-width: 761px) and (max-width: 900px) {
+  .meta-type {
+    left: calc(75% - 28px);
+  }
+  .meta-tag {
+    left: calc(100% - 115px);
+  }
+}
+@media (max-width: 760px) {
+  .meta-type,
+  .meta-tag {
+    display: none;
+  }
+}
+
+/* ==== Cursor caption ("drag" / "view project") ==== */
+.cursor-caption {
+  z-index: 90;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  transition: opacity 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+.cursor-caption.is-visible {
+  opacity: 1;
+}
+.cursor-hint {
+  letter-spacing: -0.015rem;
+  color: #fff;
+  white-space: nowrap;
+  -webkit-backdrop-filter: blur(0.75rem);
+  backdrop-filter: blur(0.75rem);
+  background-color: #11111140;
+  background-image:
+    linear-gradient(#fcf8ef, #fcf8ef), linear-gradient(#fcf8ef, #fcf8ef), linear-gradient(#fcf8ef, #fcf8ef),
+    linear-gradient(#fcf8ef, #fcf8ef), linear-gradient(#fcf8ef, #fcf8ef), linear-gradient(#fcf8ef, #fcf8ef),
+    linear-gradient(#fcf8ef, #fcf8ef), linear-gradient(#fcf8ef, #fcf8ef);
+  background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-size:
+    0.5rem 1px, 1px 0.5rem, 0.5rem 1px, 1px 0.5rem, 0.5rem 1px, 1px 0.5rem, 0.5rem 1px, 1px 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  position: absolute;
+  top: 1.375rem;
+  left: 1.125rem;
+}
+@media (hover: none), (max-width: 900px) {
+  .cursor-caption {
+    display: none;
+  }
+}
+
+/* ==== List view (vertical strip) ==== */
+.vticker {
+  --vtick-retract: 64px;
+  z-index: 10;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+.vticker-right {
+  left: auto;
+  right: 0;
+}
+.vticker-strip {
+  height: 100%;
+  transition: transform 0.45s var(--ui-ease);
+  position: relative;
+  transform: translateX(calc(-1 * var(--vtick-retract)));
+}
+.vticker-right .vticker-strip {
+  transform: translateX(var(--vtick-retract));
+}
+.slider-view.is-active.is-vertical .vticker-strip {
+  transform: none;
+}
+/* Zero-height anchor on the group's centre line; the column overflows evenly. */
+.vtick-group {
+  visibility: hidden;
+  will-change: transform;
+  align-items: center;
+  height: 0;
+  display: flex;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.vticker-right .vtick-group {
+  left: auto;
+  right: 0;
+}
+.vtick-col {
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  height: var(--tick-row-w, 86.7px);
+  display: flex;
+}
+.vticker-right .vtick-col {
+  align-items: flex-end;
+}
+.vtick-col i {
+  background: #ffffff40;
+  transform-origin: left;
+  width: calc(16px * var(--ts, 1));
+  height: 1px;
+  display: block;
+}
+.vticker-right .vtick-col i {
+  transform-origin: right;
+}
+.vtick-col i:nth-child(4) {
+  width: calc(32px * var(--ts, 1));
+}
+.vtick-col i.is-active {
+  background: var(--red);
+}
+
+.vticker-caret {
+  z-index: 10;
+  left: var(--vcaret-x);
+  background: var(--red);
+  clip-path: polygon(0 50%, 75% 6.7%, 75% 93.3%);
+  pointer-events: none;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.45s var(--ui-ease);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) scaleX(0);
+}
+.slider-view.is-active.is-vertical .vticker-caret {
+  transform: translateY(-50%);
+}
+
+@media (max-width: 760px) {
+  .vticker,
+  .vticker-caret {
+    display: none;
+  }
+}

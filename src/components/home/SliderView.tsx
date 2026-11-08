@@ -6,11 +6,23 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { projects, typeMeta } from "@/config/projects";
 import { ease } from "@/lib/ease";
 import { playTick } from "@/lib/sound";
+import {
+  COMPACT_BP,
+  IMAGE_SIZES,
+  INACTIVE_OPACITY,
+  PARALLAX_PCT,
+  PARALLAX_SCALE,
+  VIEW_MOVE_S,
+  cellSize,
+  clamp,
+  mod,
+  nearestPos,
+  oddAtLeast,
+  viewMoveEase,
+  wrap,
+} from "./gallery";
 
 // ---- Constants ported from the reference slider (module 21307) ----
-const COMPACT_BP = 760;
-const CELL_RATIO = 587.67 / 876.58; // tile w / h
-const INACTIVE_OPACITY = 0.5;
 const TICKS_PER_GROUP = 7;
 const TICK_PITCH = 100; // px per project at 1728px wide
 const DRAG_GAIN = 2.2;
@@ -20,27 +32,21 @@ const INTRO_HOLD_MS = 250;
 // The page entrance hands off to the slider at 60% of its 0.9s timeline, minus the hold.
 const INTRO_HANDOFF_MS = 0.9 * 0.6 * 1000 - INTRO_HOLD_MS;
 const FILTER_S = 1.6;
-const PARALLAX_PCT = 6; // image travel inside a tile, % of tile width
 
 const GROUPS = Array.from({ length: 41 }, (_, i) => i - 20);
+const VGROUPS = Array.from({ length: 21 }, (_, i) => i - 10); // side rulers in list mode
 const DIAL_MARKS = Array.from({ length: 72 }, (_, i) => i * 5);
 
-const mod = (a: number, n: number) => ((a % n) + n) % n;
-const clamp = (min: number, max: number, v: number) => Math.min(max, Math.max(min, v));
-const wrap = (min: number, max: number, v: number) => min + mod(v - min, max - min);
 const tickScale = (w: number) => clamp(0.7, 1.15, w / 1728);
 const isCompact = () => window.innerWidth <= COMPACT_BP;
 
-function cellSize(W: number, H: number) {
-  if (W <= COMPACT_BP) return { w: H * (758 / 1116), h: H };
-  const h = Math.min(((587.67 / 1728) * W * 1.15) / CELL_RATIO, 0.72 * H);
-  return { w: h * CELL_RATIO, h };
+/** Enough tiles to cover the screen as a row (slider) and as a column (list). */
+function poolSize(W: number, H: number) {
+  const c = cellSize(W, H);
+  return oddAtLeast(5, Math.max(Math.ceil(W / Math.max(1e-6, c.w)), Math.ceil(H / Math.max(1e-6, c.h))) + 2);
 }
 
-function poolSize(W: number, H: number) {
-  const n = Math.ceil(W / Math.max(1e-6, cellSize(W, H).w)) + 2;
-  return Math.max(5, n % 2 === 0 ? n + 1 : n);
-}
+export type Orientation = "horizontal" | "vertical";
 
 const poolSlots = (n: number) => Array.from({ length: n }, (_, i) => i - (n - 1) / 2);
 
@@ -57,6 +63,8 @@ type Controller = {
   setItems: (items: number[], animated: boolean) => void;
   setFisheye: (on: boolean) => void;
   intro: () => void;
+  setActive: (active: boolean, centerProject: number) => void;
+  setOrientation: (o: Orientation) => void;
 };
 
 type GroupRefs = {
@@ -69,13 +77,32 @@ type GroupRefs = {
   project: number;
 };
 
+type VGroupRefs = { el: HTMLElement; ticks: HTMLElement[] };
+
 type Props = {
   items: number[];
   entered: boolean;
   fisheye: boolean;
+  /** False while another view (grid) is showing: tiles hide, input is ignored. */
+  active: boolean;
+  /** Project to centre on when becoming active again. */
+  centerProject: number;
+  onActiveChange: (project: number) => void;
+  /** "vertical" is the list view: the row turns into a column (the reference's `rot`). */
+  orientation: Orientation;
+  onRotated: (o: Orientation) => void;
 };
 
-export function SliderView({ items, entered, fisheye }: Props) {
+export function SliderView({
+  items,
+  entered,
+  fisheye,
+  active,
+  centerProject,
+  onActiveChange,
+  orientation,
+  onRotated,
+}: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
   const vignetteRef = useRef<HTMLDivElement>(null);
@@ -88,8 +115,17 @@ export function SliderView({ items, entered, fisheye }: Props) {
   const mediaRefs = useRef<(HTMLDivElement | null)[]>([]);
   const colourRefs = useRef<(HTMLDivElement | null)[]>([]);
   const groupRefs = useRef<(GroupRefs | null)[]>([]);
+  const vtickerRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const vgroupRefs = useRef<VGroupRefs[][]>([]);
   const ctrl = useRef<Controller | null>(null);
   const itemsRef = useRef(items);
+  const shownOrientation = useRef<Orientation>("horizontal");
+  const onActiveRef = useRef(onActiveChange);
+  const onRotatedRef = useRef(onRotated);
+  useEffect(() => {
+    onActiveRef.current = onActiveChange;
+    onRotatedRef.current = onRotated;
+  });
 
   // Slot count depends on the viewport; 7 covers a typical desktop for the server render.
   const [slots, setSlots] = useState(() => poolSlots(7));
@@ -108,13 +144,16 @@ export function SliderView({ items, entered, fisheye }: Props) {
       fade: 1,
       filterT: 1,
       lens: 0,
+      rot: 0, // 0 = row (slider), 1 = column (list)
       introX: 3 * window.innerWidth,
       introFrom: 3 * window.innerWidth,
       introRunning: false,
       introDetent: 0,
       introPasses: 0,
       parked: true,
+      interactive: true,
       dragging: false,
+      lastActive: -1,
       lastTick: null as number | null,
       lastDialMark: -1,
       lastDialProject: -1,
@@ -150,6 +189,9 @@ export function SliderView({ items, entered, fisheye }: Props) {
       const pool = slotList.length;
       const M = sim.items.length || 1;
       const lens = sim.lens;
+      const angle = (sim.rot * Math.PI) / 2;
+      const rotCos = Math.cos(angle);
+      const rotSin = Math.sin(angle);
       let projChanged = false;
       const nextProj = slotProjRef.current.slice(0, pool);
 
@@ -163,8 +205,12 @@ export function SliderView({ items, entered, fisheye }: Props) {
 
         const tile = tileRefs.current[i];
         if (!tile) continue;
-        const S = e * cell.w;
-        const visible = Math.abs(S) < W / 2 + cell.w && sim.fade > 0.01;
+        // Spacing blends from tile width (row) to tile height (column) as the strip rotates.
+        const S = e * (cell.w + (cell.h - cell.w) * sim.rot);
+        const sx = S * rotCos;
+        const sy = S * rotSin;
+        const visible =
+          Math.abs(sx) < W / 2 + cell.w && Math.abs(sy) < H / 2 + cell.h && sim.fade > 0.01;
         tile.style.visibility = visible ? "visible" : "hidden";
         if (!visible) continue;
 
@@ -172,23 +218,33 @@ export function SliderView({ items, entered, fisheye }: Props) {
         // Fisheye (DOM approximation of the WebGL lens): bulge the centre, pull the edges in.
         const ae = Math.min(2, Math.abs(e));
         const scale = 1 + lens * (0.08 - 0.1 * ae);
-        const x = W / 2 + S * (1 - lens * 0.04 * ae) + sim.introX - cell.w / 2;
-        tile.style.transform = `translate3d(${x}px, ${(H - cell.h) / 2}px, 0) scale(${scale})`;
+        const squeeze = 1 - lens * 0.04 * ae;
+        const x = W / 2 + sx * squeeze + sim.introX - cell.w / 2;
+        const y = H / 2 + sy * squeeze - cell.h / 2;
+        tile.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
         tile.style.opacity = String(sim.fade * sim.filterT * (INACTIVE_OPACITY + (1 - INACTIVE_OPACITY) * n));
         tile.style.zIndex = String(Math.round(n * 10));
+        tile.classList.toggle("is-center", n > 0.5);
 
         const colour = colourRefs.current[i];
         if (colour) colour.style.opacity = String(n);
         const media = mediaRefs.current[i];
         if (media) {
-          const norm = clamp(-1, 1, S / (W / 2));
-          media.style.transform = `translate3d(${-norm * PARALLAX_PCT}%, 0, 0) scale(${1 / 0.88})`;
+          const nx = clamp(-1, 1, sx / (W / 2));
+          const ny = clamp(-1, 1, sy / (H / 2));
+          media.style.transform = `translate3d(${-nx * PARALLAX_PCT}%, ${-ny * PARALLAX_PCT}%, 0) scale(${PARALLAX_SCALE})`;
         }
       }
 
       if (projChanged) {
         slotProjRef.current = nextProj;
         setSlotProj(nextProj);
+      }
+
+      const activeProj = sim.items[mod(Math.round(sim.pos), M)] ?? 0;
+      if (activeProj !== sim.lastActive && sim.interactive) {
+        sim.lastActive = activeProj;
+        onActiveRef.current(activeProj);
       }
     };
 
@@ -256,6 +312,33 @@ export function SliderView({ items, entered, fisheye }: Props) {
       }
     };
 
+    // Side rulers for the list view: the bottom ticker turned on its side, on both edges.
+    const renderVTicker = () => {
+      if (sim.rot <= 0 && !root.classList.contains("is-vertical")) return;
+      const r = tickScale(W);
+      const pitch = TICK_PITCH * r;
+      const o = sim.pos - Math.round(sim.pos);
+      for (const side of vgroupRefs.current) {
+        for (let g = 0; g < side.length; g++) {
+          const c = side[g];
+          const d = VGROUPS[g] - o;
+          if (Math.abs(d) * pitch > H / 2 + pitch) {
+            c.el.style.visibility = "hidden";
+            continue;
+          }
+          c.el.style.visibility = "visible";
+          const m = clamp(0, 1, 1 - Math.abs(d));
+          c.el.style.transform = `translate3d(0, ${H / 2 + d * pitch}px, 0)`;
+          const minor = (12 + 4 * m) / 16;
+          for (let t = 0; t < c.ticks.length; t++) {
+            const tick = c.ticks[t];
+            if (t === (TICKS_PER_GROUP - 1) / 2) tick.classList.toggle("is-active", m > 0.5);
+            else tick.style.transform = `scaleX(${minor})`;
+          }
+        }
+      }
+    };
+
     const step = (dt: number) => {
       if (sim.introRunning) {
         sim.introX += (0 - sim.introX) * (1 - Math.exp(-4 * dt));
@@ -290,6 +373,7 @@ export function SliderView({ items, entered, fisheye }: Props) {
       step(dt);
       renderTiles();
       renderTicker();
+      renderVTicker();
       sim.raf = busy() ? requestAnimationFrame(frame) : 0;
     };
 
@@ -313,16 +397,20 @@ export function SliderView({ items, entered, fisheye }: Props) {
     let pointerId = -1;
     let lastX = 0;
     let downX = 0;
+    let lastY = 0;
+    let downY = 0;
+    const vertical = () => sim.rot > 0.5;
     let lastT = 0;
     let downT = 0;
     let startTarget = 0;
     let velocity = 0;
 
     const onDown = (e: PointerEvent) => {
-      if (sim.parked || (e.pointerType === "mouse" && e.button !== 0)) return;
+      if (sim.parked || !sim.interactive || (e.pointerType === "mouse" && e.button !== 0)) return;
       sim.dragging = true;
       pointerId = e.pointerId;
       lastX = downX = e.clientX;
+      lastY = downY = e.clientY;
       lastT = downT = performance.now();
       startTarget = sim.target;
       velocity = 0;
@@ -338,12 +426,15 @@ export function SliderView({ items, entered, fisheye }: Props) {
       if (!sim.dragging || e.pointerId !== pointerId) return;
       const gain = W <= COMPACT_BP ? MOBILE_DRAG_GAIN : DRAG_GAIN;
       // Pixels → cells. The reference divides by (cellW / visibleW · screenW), i.e. cell width in px.
-      const delta = -((e.clientX - lastX) * gain) / cell.w;
+      const delta = vertical()
+        ? -((e.clientY - lastY) * gain) / cell.h
+        : -((e.clientX - lastX) * gain) / cell.w;
       sim.target += delta;
       const now = performance.now();
       velocity = 0.7 * velocity + (delta / Math.max(1, now - lastT)) * 0.3;
       lastT = now;
       lastX = e.clientX;
+      lastY = e.clientY;
       wake();
     };
 
@@ -354,8 +445,11 @@ export function SliderView({ items, entered, fisheye }: Props) {
       root.classList.remove("is-dragging");
 
       // A click (no real movement) on a side tile brings that tile to the centre.
-      if (Math.abs(e.clientX - downX) < 5 && performance.now() - downT < 400) {
-        const offset = Math.round((e.clientX - W / 2) / cell.w + (sim.pos - Math.round(sim.pos)));
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) < 5 && performance.now() - downT < 400) {
+        const frac = sim.pos - Math.round(sim.pos);
+        const offset = vertical()
+          ? Math.round((e.clientY - H / 2) / cell.h + frac)
+          : Math.round((e.clientX - W / 2) / cell.w + frac);
         sim.target = Math.round(startTarget) + offset;
         wake();
         return;
@@ -372,7 +466,7 @@ export function SliderView({ items, entered, fisheye }: Props) {
     };
 
     const onWheel = (e: WheelEvent) => {
-      if (sim.parked) return;
+      if (sim.parked || !sim.interactive) return;
       e.preventDefault();
       const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       sim.target += 0.0016 * clamp(-140, 140, d);
@@ -381,12 +475,15 @@ export function SliderView({ items, entered, fisheye }: Props) {
     };
 
     const onKey = (e: KeyboardEvent) => {
-      if (sim.parked || e.defaultPrevented) return;
+      if (sim.parked || !sim.interactive || e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-      if (e.key === "ArrowRight") sim.target = Math.round(sim.target) + 1;
-      else if (e.key === "ArrowLeft") sim.target = Math.round(sim.target) - 1;
+      const next = vertical() ? "ArrowDown" : "ArrowRight";
+      const prev = vertical() ? "ArrowUp" : "ArrowLeft";
+      if (e.key === next) sim.target = Math.round(sim.target) + 1;
+      else if (e.key === prev) sim.target = Math.round(sim.target) - 1;
       else return;
+      e.preventDefault();
       wake();
     };
 
@@ -395,6 +492,9 @@ export function SliderView({ items, entered, fisheye }: Props) {
       wake();
     };
 
+    let introTimer = 0;
+    let rotation: { stop: () => void } | null = null;
+
     // ---- Controller used by the prop effects below ----
     const tickerLines = () => Array.from(tickerRef.current?.querySelectorAll<HTMLElement>(".tick-line") ?? []);
 
@@ -402,6 +502,7 @@ export function SliderView({ items, entered, fisheye }: Props) {
       render() {
         renderTiles();
         renderTicker();
+        renderVTicker();
       },
       setItems(next, animated) {
         if (!animated) {
@@ -452,22 +553,68 @@ export function SliderView({ items, entered, fisheye }: Props) {
         sim.introX = sim.introFrom = 3 * W;
         sim.introPasses = Math.floor(sim.introX / cell.w);
         sim.introDetent = sim.introPasses;
-        window.setTimeout(() => {
-          window.setTimeout(() => {
+        introTimer = window.setTimeout(() => {
+          introTimer = window.setTimeout(() => {
             sim.parked = false;
             sim.introRunning = true;
             wake();
-            animate(
-              tickerLines(),
-              { transform: ["translateY(110%)", "translateY(0%)"] },
-              { duration: 1.3, ease: ease.power3Out },
-            );
+            const lines = tickerLines();
+            if (lines.length) {
+              animate(lines, { transform: ["translateY(110%)", "translateY(0%)"] }, { duration: 1.3, ease: ease.power3Out });
+            }
             const dial = dialRef.current;
             if (dial && isCompact()) {
               animate(dial, { transform: ["translateY(120%)", "translateY(0%)"] }, { duration: 1.3, ease: ease.power3Out });
             }
           }, INTRO_HOLD_MS);
         }, INTRO_HANDOFF_MS);
+      },
+      setOrientation(o) {
+        const target = o === "vertical" ? 1 : 0;
+        root.classList.toggle("is-vertical", o === "vertical");
+        rotation?.stop();
+        // Same 1.6s sextic ease as the grid morph; shorter if reversing mid-turn.
+        const duration = VIEW_MOVE_S * Math.abs(target - sim.rot);
+        if (duration === 0) {
+          onRotatedRef.current(o);
+          return;
+        }
+        playTick();
+        const from = sim.rot;
+        rotation = animate(0, 1, {
+          duration,
+          ease: "linear",
+          onUpdate: (p) => {
+            sim.rot = from + (target - from) * viewMoveEase(p);
+            renderTiles();
+            renderVTicker();
+          },
+          onComplete: () => {
+            sim.rot = target;
+            renderTiles();
+            renderVTicker();
+            onRotatedRef.current(o);
+          },
+        });
+      },
+      // Views swap instantly: the grid's morph starts from (and ends on) exactly this row of tiles.
+      setActive(on, centerProject) {
+        sim.interactive = on;
+        if (on) {
+          const k = sim.items.indexOf(centerProject);
+          if (k >= 0) sim.pos = sim.target = nearestPos(sim.pos, k, sim.items.length);
+          sim.lastTick = null;
+          sim.fade = 1;
+        } else {
+          sim.dragging = false;
+          root.classList.remove("is-dragging");
+          sim.target = Math.round(sim.target);
+          sim.pos = sim.target;
+          sim.fade = 0;
+        }
+        renderTiles();
+        renderTicker();
+        renderVTicker();
       },
     };
 
@@ -484,6 +631,15 @@ export function SliderView({ items, entered, fisheye }: Props) {
       }),
     );
 
+    vgroupRefs.current = vtickerRefs.current
+      .filter((el): el is HTMLDivElement => !!el)
+      .map((side) =>
+        Array.from(side.querySelectorAll<HTMLElement>(".vtick-group")).map((el) => ({
+          el,
+          ticks: Array.from(el.querySelectorAll<HTMLElement>(".vtick-col i")),
+        })),
+      );
+
     measure();
     wake();
 
@@ -498,6 +654,9 @@ export function SliderView({ items, entered, fisheye }: Props) {
     return () => {
       cancelAnimationFrame(sim.raf);
       window.clearTimeout(settleTimer);
+      window.clearTimeout(introTimer);
+      rotation?.stop();
+      shownOrientation.current = "horizontal";
       root.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
@@ -525,12 +684,29 @@ export function SliderView({ items, entered, fisheye }: Props) {
     ctrl.current?.setFisheye(fisheye);
   }, [fisheye]);
 
+  const centerRef = useRef(centerProject);
+  useLayoutEffect(() => {
+    centerRef.current = centerProject;
+  });
+  const wasActive = useRef(active);
+  useLayoutEffect(() => {
+    if (wasActive.current === active) return;
+    wasActive.current = active;
+    ctrl.current?.setActive(active, centerRef.current);
+  }, [active]);
+
+  useLayoutEffect(() => {
+    if (shownOrientation.current === orientation) return;
+    shownOrientation.current = orientation;
+    ctrl.current?.setOrientation(orientation);
+  }, [orientation]);
+
   useEffect(() => {
     if (entered) ctrl.current?.intro();
   }, [entered]);
 
   return (
-    <div className="slider-view" ref={rootRef}>
+    <div className={`slider-view${active ? " is-active" : ""}`} ref={rootRef} aria-hidden={!active}>
       <div className="stage" aria-label="Projects" role="region">
         {slots.map((_, i) => {
           const p = projects[slotProj[i] ?? 0];
@@ -555,7 +731,7 @@ export function SliderView({ items, entered, fisheye }: Props) {
                     alt=""
                     fill
                     loading="eager"
-                    sizes="(max-width: 760px) 70vw, 30vw"
+                    sizes={IMAGE_SIZES}
                     draggable={false}
                   />
                 </div>
@@ -571,7 +747,7 @@ export function SliderView({ items, entered, fisheye }: Props) {
                     alt={p.name}
                     fill
                     loading="eager"
-                    sizes="(max-width: 760px) 70vw, 30vw"
+                    sizes={IMAGE_SIZES}
                     draggable={false}
                   />
                 </div>
@@ -604,6 +780,31 @@ export function SliderView({ items, entered, fisheye }: Props) {
           ))}
         </div>
       </div>
+
+      {/* List view: rulers down both edges and a ◀ pointing at the project name */}
+      {(["left", "right"] as const).map((side, si) => (
+        <div
+          key={side}
+          className={`vticker vticker-${side}`}
+          aria-hidden="true"
+          ref={(el) => {
+            vtickerRefs.current[si] = el;
+          }}
+        >
+          <div className="vticker-strip">
+            {VGROUPS.map((g) => (
+              <div key={g} className="vtick-group">
+                <div className="vtick-col">
+                  {Array.from({ length: TICKS_PER_GROUP }, (_, t) => (
+                    <i key={t} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <span className="vticker-caret" aria-hidden="true" />
 
       {/* Desktop ticker: a ruler with one group of 7 ticks per project */}
       <div className="ticker" ref={tickerRef} aria-hidden="true">

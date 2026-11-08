@@ -33,7 +33,8 @@ Treat `resources/` as **read-only reference material**. Don't import from it in 
 - `src/config/site.ts`: brand name, tagline, list of images to preload
 - `src/components/Experience.tsx`: client root; shows the intro, then the site
 - `src/components/intro/`: intro screen (`IntroScreen`) and ruler-scale loader (`RulerLoader`)
-- `src/components/home/`: landing page after the intro. `Home` (header, view switch, footer toggles, entrance animation), `SliderView` (tile slider + ruler ticker + mobile dial, driven by one rAF loop that writes transforms directly), `TrustedBadge`, `home.css`
+- `src/components/home/`: landing page after the intro. `Home` (header, view switching, centred-project meta, footer toggles, entrance animation), `SliderView` (tile strip: horizontal = slider, vertical = list view; ruler ticker, side rulers, mobile dial; one rAF loop that writes transforms directly), `GridView` (2D grid, edge rulers; morphs out of / back into the slider row), `CursorCaption` ("drag" / "view project"), `TrustedBadge`, `gallery.ts` (shared geometry + easing), `home.css`
+- The original's grid and list JS chunks were not saved; their values come from its CSS, the slider's `rot` code, and the user's screenshots
 - `src/config/projects.ts`: portfolio entries, filters, `typeMeta()`. Images point at `public/dev/` placeholders (copied from `resources/`, must be replaced before going public)
 
 ## Conventions

@@ -3,15 +3,18 @@
 import { animate } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RollText } from "@/components/RollText";
-import { filterItems, filters, type Filter } from "@/config/projects";
+import { filterItems, filters, projects, typeMeta, type Filter } from "@/config/projects";
 import { site } from "@/config/site";
 import { ease } from "@/lib/ease";
 import { playTick } from "@/lib/sound";
-import { SliderView } from "./SliderView";
+import { CursorCaption } from "./CursorCaption";
+import { GridView } from "./GridView";
+import { SliderView, type Orientation } from "./SliderView";
 import { TrustedBadge } from "./TrustedBadge";
 import "./home.css";
 
 const VIEWS = ["slider", "grid", "list"] as const;
+type View = (typeof VIEWS)[number];
 
 /** A line of text that rises out of a mask on entrance and rolls on hover. */
 function Line({ children }: { children: ReactNode }) {
@@ -37,12 +40,71 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   const filterLinks = useRef<Partial<Record<Filter, HTMLAnchorElement>>>({});
   const toggleRef = useRef<HTMLDivElement>(null);
   const toggleCaretRef = useRef<HTMLSpanElement>(null);
-  const viewButtons = useRef<Partial<Record<(typeof VIEWS)[number], HTMLButtonElement>>>({});
+  const viewButtons = useRef<Partial<Record<View, HTMLButtonElement>>>({});
 
   const [filter, setFilter] = useState<Filter>("works");
   const [fisheye, setFisheye] = useState(false);
   const items = useMemo(() => filterItems(filter), [filter]);
-  const view = "slider";
+  const [view, setView] = useState<View>("slider");
+  const viewRef = useRef<View>("slider");
+  // Slider and list are one strip (row / column). The grid morphs out of and back into
+  // the row, so moving list ⇄ grid turns the column back into a row first.
+  const [sliderActive, setSliderActive] = useState(true);
+  const [orientation, setOrientation] = useState<Orientation>("horizontal");
+  const [gridOn, setGridOn] = useState(false);
+  const [gridMounted, setGridMounted] = useState(false);
+  // Project the incoming view centres on; the outgoing view's current project.
+  const [centerProject, setCenterProject] = useState(0);
+  const activeProject = useRef(0);
+  const metaRefs = useRef<Partial<Record<"index" | "name" | "type" | "tag", HTMLElement | null>>>({});
+
+  // Header meta (grid and list) follows the centred project without re-rendering.
+  const onActiveChange = useCallback((i: number) => {
+    activeProject.current = i;
+    const p = projects[i];
+    const m = metaRefs.current;
+    if (m.index) m.index.textContent = `${String(i + 1).padStart(2, "0")}.`;
+    if (m.name) m.name.textContent = p.name;
+    if (m.type) m.type.textContent = typeMeta(p);
+    if (m.tag) m.tag.textContent = p.tag;
+  }, []);
+  useEffect(() => onActiveChange(activeProject.current), [onActiveChange]);
+
+  const enterGrid = useCallback(() => {
+    setCenterProject(activeProject.current);
+    setGridMounted(true);
+    setSliderActive(false);
+    setGridOn(true);
+  }, []);
+
+  const switchView = (v: View) => {
+    playTick();
+    if (v === viewRef.current) return;
+    viewRef.current = v;
+    setView(v);
+    if (v === "grid") {
+      if (orientation === "vertical") setOrientation("horizontal"); // enterGrid once the row is back
+      else enterGrid();
+    } else if (gridOn) {
+      setGridOn(false); // onGridExited hands back to the strip
+    } else {
+      setOrientation(v === "list" ? "vertical" : "horizontal");
+    }
+  };
+
+  const onGridExited = useCallback(() => {
+    if (viewRef.current === "grid") return;
+    setCenterProject(activeProject.current);
+    setSliderActive(true);
+    if (viewRef.current === "list") setOrientation("vertical");
+  }, []);
+
+  const onRotated = useCallback(
+    (o: Orientation) => {
+      if (o === "horizontal" && viewRef.current === "grid") enterGrid();
+    },
+    [enterGrid],
+  );
 
   // Red ▶ in the nav follows the hovered link and returns to the current filter.
   const moveNavCaret = useCallback((link: HTMLElement | null | undefined) => {
@@ -72,7 +134,7 @@ export function Home({ entered, sound, onToggleSound }: Props) {
     document.fonts?.ready.then(place);
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [filter, moveNavCaret, moveToggleCaret]);
+  }, [filter, view, moveNavCaret, moveToggleCaret]);
 
   // Page entrance once the intro hands over: lines rise, blocks fade up 28px.
   useEffect(() => {
@@ -95,8 +157,42 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   };
 
   return (
-    <div className={`landing${entered ? " is-entered" : ""}`} ref={rootRef}>
-      <SliderView items={items} entered={entered} fisheye={fisheye} />
+    <div className={`landing view-${view}${entered ? " is-entered" : ""}`} ref={rootRef}>
+      <SliderView
+        items={items}
+        entered={entered}
+        fisheye={fisheye}
+        active={sliderActive}
+        centerProject={centerProject}
+        onActiveChange={onActiveChange}
+        orientation={orientation}
+        onRotated={onRotated}
+      />
+      {gridMounted && (
+        <GridView
+          items={items}
+          active={gridOn}
+          centerProject={centerProject}
+          fisheye={fisheye}
+          onActiveChange={onActiveChange}
+          onExited={onGridExited}
+        />
+      )}
+      <CursorCaption />
+
+      {/* Centred project, spread across the middle of the screen (grid and list views) */}
+      {(["index", "name", "type", "tag"] as const).map((slot) => (
+        <div key={slot} className={`meta-slot meta-${slot}`}>
+          <div className="reveal-mask">
+            <p
+              className="meta meta-line"
+              ref={(el) => {
+                metaRefs.current[slot] = el;
+              }}
+            />
+          </div>
+        </div>
+      ))}
 
       <header className="chrome" data-reveal="chrome">
         <p className="logo">
@@ -172,13 +268,15 @@ export function Home({ entered, sound, onToggleSound }: Props) {
             ref={(el) => {
               if (el) viewButtons.current[v] = el;
             }}
+            aria-pressed={v === view}
             onMouseEnter={(e) => {
               playTick();
               moveToggleCaret(e.currentTarget);
+              // Warm up the grid (and its images) before the click.
+              if (v === "grid" && entered) setGridMounted(true);
             }}
-            onClick={playTick}
-            // Grid and list views are not built yet.
-            aria-disabled={v !== view || undefined}
+            onClick={() => switchView(v)}
+
           >
             <Line>{v}</Line>
           </button>
