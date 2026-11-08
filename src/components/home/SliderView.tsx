@@ -103,7 +103,6 @@ type Props = {
   onActiveChange: (project: number) => void;
   /** "vertical" is the list view: the row turns into a column (the reference's `rot`). */
   orientation: Orientation;
-  onRotated: (o: Orientation) => void;
   /**
    * Whether the tiles are drawn. Separate from `active` so the outgoing view can stay
    * on screen, underneath, until the incoming one has painted its images.
@@ -121,7 +120,6 @@ export function SliderView({
   centerProject,
   onActiveChange,
   orientation,
-  onRotated,
   shown,
   onShown,
 }: Props) {
@@ -143,12 +141,10 @@ export function SliderView({
   const itemsRef = useRef(items);
   const shownOrientation = useRef<Orientation>("horizontal");
   const onActiveRef = useRef(onActiveChange);
-  const onRotatedRef = useRef(onRotated);
   const onShownRef = useRef(onShown);
   const pendingShown = useRef(false);
   useEffect(() => {
     onActiveRef.current = onActiveChange;
-    onRotatedRef.current = onRotated;
     onShownRef.current = onShown;
   });
 
@@ -668,12 +664,17 @@ export function SliderView({
         const target = o === "vertical" ? 1 : 0;
         root.classList.toggle("is-vertical", o === "vertical");
         rotation?.stop();
-        // Same 1.6s sextic ease as the grid morph; shorter if reversing mid-turn.
-        const duration = VIEW_MOVE_S * Math.abs(target - sim.rot);
-        if (duration === 0) {
-          onRotatedRef.current(o);
+        // While the grid is showing, the strip changes shape instantly: the grid's morph
+        // ends on exactly this row or column, so nobody sees it turn.
+        if (!sim.interactive) {
+          sim.rot = target;
+          renderTiles();
+          renderVTicker();
           return;
         }
+        // Same 1.6s sextic ease as the grid morph; shorter if reversing mid-turn.
+        const duration = VIEW_MOVE_S * Math.abs(target - sim.rot);
+        if (duration === 0) return;
         playTick();
         const from = sim.rot;
         rotation = animate(0, 1, {
@@ -688,7 +689,6 @@ export function SliderView({
             sim.rot = target;
             renderTiles();
             renderVTicker();
-            onRotatedRef.current(o);
           },
         });
       },
@@ -798,18 +798,20 @@ export function SliderView({
     ctrl.current?.setShown(shown);
   }, [shown]);
 
+  // Orientation before activation: when the grid hands back, the hidden strip snaps to
+  // the right shape first, then wakes up.
+  useLayoutEffect(() => {
+    if (shownOrientation.current === orientation) return;
+    shownOrientation.current = orientation;
+    ctrl.current?.setOrientation(orientation);
+  }, [orientation]);
+
   const wasActive = useRef(active);
   useLayoutEffect(() => {
     if (wasActive.current === active) return;
     wasActive.current = active;
     ctrl.current?.setActive(active, centerRef.current);
   }, [active]);
-
-  useLayoutEffect(() => {
-    if (shownOrientation.current === orientation) return;
-    shownOrientation.current = orientation;
-    ctrl.current?.setOrientation(orientation);
-  }, [orientation]);
 
   useEffect(() => {
     if (entered) ctrl.current?.intro();
@@ -833,7 +835,12 @@ export function SliderView({
   }, [active, shown, slotProj]);
 
   return (
-    <div className={`slider-view${active ? " is-active" : ""}`} ref={rootRef} aria-hidden={!active}>
+    // is-vertical lives in JSX too: React rewrites className when `active` changes.
+    <div
+      className={`slider-view${active ? " is-active" : ""}${orientation === "vertical" ? " is-vertical" : ""}`}
+      ref={rootRef}
+      aria-hidden={!active}
+    >
       <div className="stage" aria-label="Projects" role="region">
         {slots.map((_, i) => {
           const p = projects[slotProj[i] ?? 0];

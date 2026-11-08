@@ -79,6 +79,9 @@ type Controller = {
   setFisheye: (on: boolean) => void;
 };
 
+/** Which strip the grid morphs out of / into: the slider's row or the list's column. */
+export type GridAxis = "row" | "column";
+
 type Props = {
   items: number[];
   active: boolean;
@@ -92,9 +95,21 @@ type Props = {
   shown: boolean;
   /** Fired once after becoming active, when the visible cells' images are painted. */
   onShown: () => void;
+  /** Read when the morph starts: "row" to/from the slider, "column" to/from the list. */
+  axis: GridAxis;
 };
 
-export function GridView({ items, active, centerProject, fisheye, onActiveChange, onExited, shown, onShown }: Props) {
+export function GridView({
+  items,
+  active,
+  centerProject,
+  fisheye,
+  onActiveChange,
+  onExited,
+  shown,
+  onShown,
+  axis,
+}: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -107,6 +122,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
     right: null,
   });
   const ctrl = useRef<Controller | null>(null);
+  const axisRef = useRef(axis);
   const shownActive = useRef(false);
   const wasShown = useRef(false);
   const fisheyeShown = useRef(false);
@@ -135,6 +151,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       items: itemsRef.current,
       morphT: 0, // seconds into the slider → grid morph (0 = slider layout)
       morphTotal: VIEW_MOVE_S,
+      axis: "row" as GridAxis,
       active: false,
       shown: false,
       filterT: 1,
@@ -214,6 +231,8 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       const scw = cw * s * ls;
       const sch = ch * s * ls;
       const activeRow = Math.round(sim.py);
+      const activeCol = Math.round(sim.px);
+      const byColumn = sim.axis === "column";
 
       const nextProj = cellProjRef.current.slice(0, nx * ny);
       let changed = false;
@@ -221,8 +240,8 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       for (let j = 0; j < ny; j++) {
         const ey = wrap(-ny / 2, ny / 2, ys[j] - sim.py);
         const row = Math.round(sim.py + ey);
-        const band = row - activeRow;
-        const bandY = bandOffset(sim.morphT, band, H);
+        // Row morph: rows above and below fly in vertically (slider ⇄ grid).
+        const bandY = byColumn ? 0 : bandOffset(sim.morphT, row - activeRow, H);
         for (let i = 0; i < nx; i++) {
           const k = j * nx + i;
           const ex = wrap(-nx / 2, nx / 2, xs[i] - sim.px);
@@ -235,8 +254,10 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
           const cell = cellRefs.current[k];
           if (!cell) continue;
+          // Column morph: columns either side fly in horizontally (list ⇄ grid).
+          const bandX = byColumn ? bandOffset(sim.morphT, col - activeCol, W) : 0;
           // Flat centre, relative to the screen centre.
-          const fx = ex * scw;
+          const fx = ex * scw + bandX;
           const fy = ey * sch + bandY;
           const visible =
             visibleRoot &&
@@ -471,7 +492,10 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
           sim.ty = sim.py = Math.round(sim.ty);
         }
 
-        sim.morphTotal = bandedDuration(Math.ceil(poolRef.current.ny / 2));
+        sim.axis = axisRef.current;
+        sim.morphTotal = bandedDuration(
+          Math.ceil((sim.axis === "column" ? poolRef.current.nx : poolRef.current.ny) / 2),
+        );
         const target = on ? sim.morphTotal : 0;
         const remaining = Math.abs(target - sim.morphT);
         morph = animate(sim.morphT, target, {
@@ -582,6 +606,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
   const centerRef = useRef(centerProject);
   useLayoutEffect(() => {
     centerRef.current = centerProject;
+    axisRef.current = axis;
   });
   useLayoutEffect(() => {
     if (shownActive.current === active) return;

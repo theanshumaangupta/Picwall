@@ -8,7 +8,7 @@ import { site } from "@/config/site";
 import { ease } from "@/lib/ease";
 import { playTick } from "@/lib/sound";
 import { CursorCaption } from "./CursorCaption";
-import { GridView } from "./GridView";
+import { GridView, type GridAxis } from "./GridView";
 import { SliderView, type Orientation } from "./SliderView";
 import { TrustedBadge } from "./TrustedBadge";
 import "./home.css";
@@ -47,11 +47,12 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   const items = useMemo(() => filterItems(filter), [filter]);
   const [view, setView] = useState<View>("slider");
   const viewRef = useRef<View>("slider");
-  // Slider and list are one strip (row / column). The grid morphs out of and back into
-  // the row, so moving list ⇄ grid turns the column back into a row first.
+  // Slider and list are one strip (row / column). The grid morphs straight out of and back
+  // into whichever is involved: rows for the slider, columns for the list.
   const [sliderActive, setSliderActive] = useState(true);
   const [orientation, setOrientation] = useState<Orientation>("horizontal");
   const [gridOn, setGridOn] = useState(false);
+  const [gridAxis, setGridAxis] = useState<GridAxis>("row");
   // Drawn-ness is separate from active-ness: the outgoing view stays on screen underneath
   // until the incoming view reports its images are painted, so a switch never shows a blank frame.
   const [sliderShown, setSliderShown] = useState(true);
@@ -88,9 +89,10 @@ export function Home({ entered, sound, onToggleSound }: Props) {
     viewRef.current = v;
     setView(v);
     if (v === "grid") {
-      if (orientation === "vertical") setOrientation("horizontal"); // enterGrid once the row is back
-      else enterGrid();
+      setGridAxis(orientation === "vertical" ? "column" : "row");
+      enterGrid();
     } else if (gridOn) {
+      setGridAxis(v === "list" ? "column" : "row");
       setGridOn(false); // onGridExited hands back to the strip
     } else {
       setOrientation(v === "list" ? "vertical" : "horizontal");
@@ -102,18 +104,12 @@ export function Home({ entered, sound, onToggleSound }: Props) {
     setCenterProject(activeProject.current);
     setSliderShown(true);
     setSliderActive(true); // the grid stays shown until the slider has painted
-    if (viewRef.current === "list") setOrientation("vertical");
+    // The strip is still hidden here, so it snaps to the shape the grid just morphed into.
+    setOrientation(viewRef.current === "list" ? "vertical" : "horizontal");
   }, []);
 
   const onSliderShown = useCallback(() => setGridShown(false), []);
   const onGridShown = useCallback(() => setSliderShown(false), []);
-
-  const onRotated = useCallback(
-    (o: Orientation) => {
-      if (o === "horizontal" && viewRef.current === "grid") enterGrid();
-    },
-    [enterGrid],
-  );
 
   // Red ▶ in the nav follows the hovered link and returns to the current filter.
   const moveNavCaret = useCallback((link: HTMLElement | null | undefined) => {
@@ -175,7 +171,6 @@ export function Home({ entered, sound, onToggleSound }: Props) {
         centerProject={centerProject}
         onActiveChange={onActiveChange}
         orientation={orientation}
-        onRotated={onRotated}
         shown={sliderShown}
         onShown={onSliderShown}
       />
@@ -189,6 +184,7 @@ export function Home({ entered, sound, onToggleSound }: Props) {
           onExited={onGridExited}
           shown={gridShown}
           onShown={onGridShown}
+          axis={gridAxis}
         />
       )}
       <CursorCaption />
