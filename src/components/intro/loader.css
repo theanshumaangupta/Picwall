@@ -1,0 +1,177 @@
+/* Values ported 1:1 from the reference site's loader. */
+
+.loader {
+  z-index: 100;
+  background: var(--bg);
+  will-change: opacity;
+  justify-content: center;
+  align-items: center;
+  display: flex;
+  position: fixed;
+  inset: 0;
+}
+
+.loader-inner {
+  text-align: center;
+  padding: 0 24px;
+}
+
+.loader-title {
+  font-family: "Helvetica Neue", var(--font-sans), Arial, sans-serif;
+  letter-spacing: -0.03em;
+  color: var(--red);
+  font-size: clamp(44px, 6.5vw, 112px);
+  font-weight: 800;
+  line-height: 1;
+  text-transform: none;
+}
+
+.loader-title .reveal-mask {
+  margin: -0.15em;
+  padding: 0.15em;
+}
+
+.loader-line {
+  will-change: transform;
+  display: inline-block;
+  transform: translateY(110%);
+}
+
+.loader-title sup {
+  vertical-align: super;
+  font-size: 0.45em;
+  line-height: 0;
+}
+
+.loader-copy {
+  letter-spacing: -0.02em;
+  color: var(--copy);
+  margin-top: 14px;
+  font-size: clamp(12px, 0.93vw, 16px);
+  line-height: 1.55;
+}
+
+.loader-actions {
+  opacity: 0;
+  pointer-events: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 30px;
+  transition: opacity 0.5s, transform 0.5s;
+  display: flex;
+  transform: translateY(10px);
+}
+
+.loader-actions.is-ready {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.loader-enter {
+  background: var(--red);
+  color: var(--bg);
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: -0.02em;
+  cursor: pointer;
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 26px;
+  font-size: clamp(13px, 1.05vw, 18px);
+  font-weight: 600;
+  transition: transform 0.25s;
+}
+
+.loader-enter:hover {
+  transform: scale(1.04);
+}
+
+.loader-enter-quiet {
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: -0.02em;
+  color: var(--copy);
+  cursor: pointer;
+  background: 0 0;
+  border: 0;
+  font-size: clamp(11px, 0.9vw, 15px);
+  font-weight: 600;
+  transition: color 0.25s;
+}
+
+.loader-enter-quiet:hover {
+  color: var(--cream);
+}
+
+.loader-pct {
+  z-index: 1;
+  color: var(--red);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(13px, 1.05vw, 18px);
+  position: absolute;
+  bottom: 64px;
+  left: 50%;
+  transform: translate(-50%);
+}
+
+.loader-strip {
+  pointer-events: none;
+  height: 104px;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+
+/* Ruler: 41 groups of 7 ticks; the middle tick of each group is tall. */
+.loader-ticks {
+  align-items: flex-end;
+  display: flex;
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  transform: translate(-50%);
+  gap: calc(14.2857px * var(--lt-s, 1) - 1px);
+}
+
+.lt-group {
+  width: calc(85.7143px * var(--lt-s, 1) + 1px);
+  flex: none;
+  justify-content: space-between;
+  align-items: flex-end;
+  display: flex;
+}
+
+.lt-group i {
+  width: 1px;
+  height: calc(12px * var(--lt-s, 1));
+  background: var(--tick);
+  transition: background-color 0.75s;
+  display: block;
+}
+
+.lt-group i:nth-child(4),
+.lt-group.lt-active i:nth-child(4) {
+  height: calc(32px * var(--lt-s, 1));
+}
+
+.lt-group.lt-active i {
+  height: calc(16px * var(--lt-s, 1));
+}
+
+.lt-group i.is-filled,
+.loader .lt-group.lt-active i:nth-child(4) {
+  background: var(--red);
+}
+
+.loader-head {
+  will-change: transform;
+  width: 14px;
+  height: 100px;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+}

@@ -1,26 +1,69 @@
 @import "tailwindcss";
 
+/* Palette ported from the reference site */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #111;
+  --red: #ff3131;
+  --cream: #fcf8ef;
+  --gray-150: #cbc7c2;
+  --gray-200: #b2aeab;
+  --panel: #2e2e2e;
+  --copy: #8e8c87;
+  --tick: #ffffff40;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-bg: var(--bg);
+  --color-red: var(--red);
+  --color-cream: var(--cream);
+  --color-gray-150: var(--gray-150);
+  --color-gray-200: var(--gray-200);
+  --color-panel: var(--panel);
+  --color-copy: var(--copy);
+  --color-tick: var(--tick);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-roboto-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--gray-150);
+  font-family: var(--font-roboto-mono), "Roboto Mono", monospace;
+  font-weight: 600;
+  text-transform: uppercase;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+}
+
+/* Roll-on-hover text (see RollText) */
+.roll {
+  vertical-align: top;
+  display: inline-block;
+  overflow: hidden;
+}
+.roll-inner {
+  will-change: transform;
+  transition: transform 0.45s cubic-bezier(0.4, 0, 0.15, 1);
+  display: block;
+  position: relative;
+}
+.roll-face {
+  white-space: nowrap;
+  display: block;
+}
+.roll-face + .roll-face {
+  position: absolute;
+  top: 100%;
+  left: 0;
+}
+a:hover .roll-inner,
+button:hover .roll-inner {
+  transform: translateY(-100%);
+}
+
+.reveal-mask {
+  vertical-align: top;
+  display: inline-block;
+  overflow: hidden;
 }
