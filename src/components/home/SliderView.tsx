@@ -11,9 +11,11 @@ import {
   IMAGE_SIZES,
   INACTIVE_OPACITY,
   VIEW_MOVE_S,
+  LENS_MORPH_S,
   cellSize,
   clamp,
   followSpeed,
+  mediaParams,
   mediaTransform,
   mod,
   nearestPos,
@@ -22,6 +24,15 @@ import {
   whenTilesPainted,
   wrap,
 } from "./gallery";
+import {
+  LensRenderer,
+  lensCellScale,
+  lensOptics,
+  projectRect,
+  rectInView,
+  unprojectPoint,
+  type LensTile,
+} from "./lens";
 
 // ---- Constants ported from the reference slider (module 21307) ----
 const TICKS_PER_GROUP = 7;
@@ -116,7 +127,7 @@ export function SliderView({
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
-  const vignetteRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const dialRef = useRef<HTMLDivElement>(null);
   const wheelRef = useRef<HTMLDivElement>(null);
   const dialNameRef = useRef<HTMLParagraphElement>(null);
@@ -198,7 +209,22 @@ export function SliderView({
         setSlots(next);
       }
       if (sim.parked) sim.introX = sim.introFrom = 3 * W;
+      lensRenderer?.setSize(W, H);
     };
+
+    // ---- Fisheye renderer, created the first time the lens is used ----
+    let lensRenderer: LensRenderer | null = null;
+    let lensFailed = false;
+    let lensDrawn = false;
+    const ensureLens = () => {
+      if (!lensRenderer && !lensFailed && canvasRef.current) {
+        lensRenderer = LensRenderer.create(canvasRef.current);
+        lensFailed = !lensRenderer;
+        lensRenderer?.setSize(W, H);
+      }
+      return lensRenderer;
+    };
+    const currentOptics = () => (sim.lens > 0 && lensRenderer ? lensOptics(W, H) : null);
 
     // ---- Per-frame render: writes transforms/opacity straight to the DOM ----
     const renderTiles = () => {
@@ -206,6 +232,13 @@ export function SliderView({
       const pool = slotList.length;
       const M = sim.items.length || 1;
       const lens = sim.lens;
+      // Fisheye: cells grow with the lens (the reference's lensCellScale), then bend in WebGL.
+      const ls = lensCellScale(lens);
+      const cw = cell.w * ls;
+      const ch = cell.h * ls;
+      const lensR = lens > 0 ? ensureLens() : null;
+      const optics = lensR ? lensOptics(W, H) : null;
+      const lensTiles: LensTile[] = [];
       const angle = (sim.rot * Math.PI) / 2;
       const rotCos = Math.cos(angle);
       const rotSin = Math.sin(angle);
@@ -223,34 +256,57 @@ export function SliderView({
         const tile = tileRefs.current[i];
         if (!tile) continue;
         // Spacing blends from tile width (row) to tile height (column) as the strip rotates.
-        const S = e * (cell.w + (cell.h - cell.w) * sim.rot);
-        const sx = S * rotCos;
-        const sy = S * rotSin;
+        const S = e * (cw + (ch - cw) * sim.rot);
+        const px = S * rotCos; // flat offset from the screen centre (before the intro fly-in)
+        const py = S * rotSin;
+        const fx = px + sim.introX;
         const visible =
-          Math.abs(sx) < W / 2 + cell.w && Math.abs(sy) < H / 2 + cell.h && sim.fade > 0.01;
+          sim.fade > 0.01 &&
+          (optics
+            ? rectInView(fx, py, cw, ch, W, H, lens, optics)
+            : Math.abs(fx) < W / 2 + cw && Math.abs(py) < H / 2 + ch);
         tile.style.visibility = visible ? "visible" : "hidden";
         if (!visible) continue;
 
         const n = clamp(0, 1, 1 - Math.abs(e));
-        // Fisheye (DOM approximation of the WebGL lens): bulge the centre, pull the edges in.
-        const ae = Math.min(2, Math.abs(e));
-        const scale = 1 + lens * (0.08 - 0.1 * ae);
-        const squeeze = 1 - lens * 0.04 * ae;
-        const x = W / 2 + sx * squeeze + sim.introX - cell.w / 2;
-        const y = H / 2 + sy * squeeze - cell.h / 2;
-        tile.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
-        tile.style.opacity = String(sim.fade * sim.filterT * (INACTIVE_OPACITY + (1 - INACTIVE_OPACITY) * n));
+        const opacity = sim.fade * sim.filterT * (INACTIVE_OPACITY + (1 - INACTIVE_OPACITY) * n);
+        const m = mediaParams(
+          clamp(-1, 1, px / (W / 2)),
+          clamp(-1, 1, py / (H / 2)),
+          sim.speed * rotCos,
+          sim.speed * rotSin,
+        );
         tile.style.zIndex = String(Math.round(n * 10));
         tile.classList.toggle("is-center", n > 0.5);
 
+        if (optics) {
+          // WebGL draws the tile through the lens. The DOM tile stays, invisible, over the
+          // projected box so the cursor caption and clicks still find it.
+          const r = projectRect(fx, py, cw, ch, lens, optics);
+          tile.style.transform = `translate3d(${W / 2 + r.x - cell.w / 2}px, ${H / 2 + r.y - cell.h / 2}px, 0) scale(${r.w / cell.w}, ${r.h / cell.h})`;
+          tile.style.opacity = "0";
+          const img = colourRefs.current[i]?.querySelector("img");
+          if (img) {
+            lensTiles.push({ img, cx: fx, cy: py, w: cw, h: ch, opacity, colour: n, mediaX: m.x, mediaY: m.y, mediaScale: m.scale });
+          }
+          continue;
+        }
+
+        tile.style.transform = `translate3d(${W / 2 + fx - cw / 2}px, ${H / 2 + py - ch / 2}px, 0) scale(${ls})`;
+        tile.style.opacity = String(opacity);
         const colour = colourRefs.current[i];
         if (colour) colour.style.opacity = String(n);
         const media = mediaRefs.current[i];
-        if (media) {
-          const nx = clamp(-1, 1, sx / (W / 2));
-          const ny = clamp(-1, 1, sy / (H / 2));
-          media.style.transform = mediaTransform(nx, ny, sim.speed * rotCos, sim.speed * rotSin);
-        }
+        if (media) media.style.transform = mediaTransform(m);
+      }
+
+      if (optics && lensR) {
+        lensTiles.sort((a, b) => a.colour - b.colour); // centre tile on top
+        lensR.draw(lensTiles, lens);
+        lensDrawn = true;
+      } else if (lensDrawn) {
+        lensRenderer?.clear();
+        lensDrawn = false;
       }
 
       if (projChanged) {
@@ -450,9 +506,10 @@ export function SliderView({
       if (!sim.dragging || e.pointerId !== pointerId) return;
       const gain = W <= COMPACT_BP ? MOBILE_DRAG_GAIN : DRAG_GAIN;
       // Pixels → cells. The reference divides by (cellW / visibleW · screenW), i.e. cell width in px.
+      const ls = lensCellScale(sim.lens);
       const delta = vertical()
-        ? -((e.clientY - lastY) * gain) / cell.h
-        : -((e.clientX - lastX) * gain) / cell.w;
+        ? -((e.clientY - lastY) * gain) / (cell.h * ls)
+        : -((e.clientX - lastX) * gain) / (cell.w * ls);
       sim.target += delta;
       const now = performance.now();
       velocity = 0.7 * velocity + (delta / Math.max(1, now - lastT)) * 0.3;
@@ -471,9 +528,12 @@ export function SliderView({
       // A click (no real movement) on a side tile brings that tile to the centre.
       if (Math.hypot(e.clientX - downX, e.clientY - downY) < 5 && performance.now() - downT < 400) {
         const frac = sim.pos - Math.round(sim.pos);
-        const offset = vertical()
-          ? Math.round((e.clientY - H / 2) / cell.h + frac)
-          : Math.round((e.clientX - W / 2) / cell.w + frac);
+        const optics = currentOptics();
+        const [fx, fy] = optics
+          ? unprojectPoint(e.clientX - W / 2, e.clientY - H / 2, sim.lens, optics)
+          : [e.clientX - W / 2, e.clientY - H / 2];
+        const ls = lensCellScale(sim.lens);
+        const offset = vertical() ? Math.round(fy / (cell.h * ls) + frac) : Math.round(fx / (cell.w * ls) + frac);
         sim.target = Math.round(startTarget) + offset;
         wake();
         return;
@@ -518,6 +578,7 @@ export function SliderView({
 
     let introTimer = 0;
     let rotation: { stop: () => void } | null = null;
+    let lensMorph: { stop: () => void } | null = null;
 
     // ---- Controller used by the prop effects below ----
     const tickerLines = () => Array.from(tickerRef.current?.querySelectorAll<HTMLElement>(".tick-line") ?? []);
@@ -562,14 +623,23 @@ export function SliderView({
         });
       },
       setFisheye(on) {
-        const vignette = vignetteRef.current;
-        animate(sim.lens, on ? 1 : 0, {
-          duration: 0.9,
-          ease: ease.power2InOut,
-          onUpdate: (v) => {
-            sim.lens = v;
-            if (vignette) vignette.style.opacity = String(v);
-            wake();
+        const target = on ? 1 : 0;
+        lensMorph?.stop();
+        const from = sim.lens;
+        const duration = LENS_MORPH_S * Math.abs(target - from);
+        if (!duration) return;
+        lensMorph = animate(0, 1, {
+          duration,
+          ease: "linear",
+          onUpdate: (p) => {
+            sim.lens = from + (target - from) * viewMoveEase(p);
+            root.style.setProperty("--lens-amount", String(sim.lens));
+            renderTiles();
+          },
+          onComplete: () => {
+            sim.lens = target;
+            root.style.setProperty("--lens-amount", String(target));
+            renderTiles();
           },
         });
       },
@@ -687,6 +757,8 @@ export function SliderView({
       window.clearTimeout(settleTimer);
       window.clearTimeout(introTimer);
       rotation?.stop();
+      lensMorph?.stop();
+      lensRenderer?.dispose();
       shownOrientation.current = "horizontal";
       root.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);
@@ -810,7 +882,8 @@ export function SliderView({
             </div>
           );
         })}
-        <div className="stage-vignette" ref={vignetteRef} aria-hidden="true" />
+        <canvas className="lens-canvas" ref={canvasRef} aria-hidden="true" />
+        <div className="stage-vignette" aria-hidden="true" />
       </div>
 
       {/* Mobile dial */}

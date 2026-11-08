@@ -9,6 +9,7 @@ import { playTick } from "@/lib/sound";
 import {
   IMAGE_SIZES,
   INACTIVE_OPACITY,
+  LENS_MORPH_S,
   VIEW_MOVE_S,
   VIEW_ZOOM,
   bandOffset,
@@ -17,6 +18,7 @@ import {
   clamp,
   easeFactor,
   followSpeed,
+  mediaParams,
   mediaTransform,
   mod,
   oddAtLeast,
@@ -24,6 +26,15 @@ import {
   whenTilesPainted,
   wrap,
 } from "./gallery";
+import {
+  LensRenderer,
+  lensCellScale,
+  lensOptics,
+  projectRect,
+  rectInView,
+  unprojectPoint,
+  type LensTile,
+} from "./lens";
 
 const FILTER_S = 1.6;
 const TICKS_PER_CELL = 7; // sound ticks per cell crossed
@@ -85,7 +96,7 @@ type Props = {
 
 export function GridView({ items, active, centerProject, fisheye, onActiveChange, onExited, shown, onShown }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const vignetteRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
   const mediaRefs = useRef<(HTMLDivElement | null)[]>([]);
   const colourRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -143,6 +154,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
     let cw = base.w * VIEW_ZOOM;
     let ch = base.h * VIEW_ZOOM;
     let morph: AnimationPlaybackControls | null = null;
+    let lensMorph: AnimationPlaybackControls | null = null;
 
     const measure = () => {
       W = window.innerWidth;
@@ -165,7 +177,22 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
         poolRef.current = next;
         setPool(next);
       }
+      lensRenderer?.setSize(W, H);
     };
+
+    // ---- Fisheye renderer, created the first time the lens is used ----
+    let lensRenderer: LensRenderer | null = null;
+    let lensFailed = false;
+    let lensDrawn = false;
+    const ensureLens = () => {
+      if (!lensRenderer && !lensFailed && canvasRef.current) {
+        lensRenderer = LensRenderer.create(canvasRef.current);
+        lensFailed = !lensRenderer;
+        lensRenderer?.setSize(W, H);
+      }
+      return lensRenderer;
+    };
+    const currentOptics = () => (sim.lens > 0 && lensRenderer ? lensOptics(W, H) : null);
 
     const render = () => {
       const { nx, ny } = poolRef.current;
@@ -179,8 +206,13 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       // Zoom from slider tile size (1 / VIEW_ZOOM) down to grid size as the morph runs.
       const zoomP = viewMoveEase(clamp(0, 1, sim.morphT / VIEW_MOVE_S));
       const s = 1 / VIEW_ZOOM + (1 - 1 / VIEW_ZOOM) * zoomP;
-      const scw = cw * s;
-      const sch = ch * s;
+      // Fisheye: cells grow with the lens (the reference's lensCellScale), then bend in WebGL.
+      const ls = lensCellScale(lens);
+      const lensR = lens > 0 && visibleRoot ? ensureLens() : null;
+      const optics = lensR ? lensOptics(W, H) : null;
+      const lensTiles: LensTile[] = [];
+      const scw = cw * s * ls;
+      const sch = ch * s * ls;
       const activeRow = Math.round(sim.py);
 
       const nextProj = cellProjRef.current.slice(0, nx * ny);
@@ -203,32 +235,52 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
           const cell = cellRefs.current[k];
           if (!cell) continue;
-          const aex = Math.min(2, Math.abs(ex));
-          const aey = Math.min(2, Math.abs(ey));
-          const cx = W / 2 + ex * scw * (1 - lens * 0.04 * aex);
-          const cy = H / 2 + ey * sch * (1 - lens * 0.04 * aey) + bandY;
+          // Flat centre, relative to the screen centre.
+          const fx = ex * scw;
+          const fy = ey * sch + bandY;
           const visible =
-            visibleRoot && Math.abs(cx - W / 2) < W / 2 + scw && Math.abs(cy - H / 2) < H / 2 + sch;
+            visibleRoot &&
+            (optics
+              ? rectInView(fx, fy, scw, sch, W, H, lens, optics)
+              : Math.abs(fx) < W / 2 + scw && Math.abs(fy) < H / 2 + sch);
           cell.style.visibility = visible ? "visible" : "hidden";
           if (!visible) continue;
 
-          const dist = Math.hypot(ex, ey);
-          const n = clamp(0, 1, 1 - dist);
-          const scale = s * (1 + lens * (0.08 - 0.1 * Math.min(2, dist)));
-          cell.style.transform = `translate3d(${cx - cw / 2}px, ${cy - ch / 2}px, 0) scale(${scale})`;
-          cell.style.opacity = String(sim.filterT * (INACTIVE_OPACITY + (1 - INACTIVE_OPACITY) * n));
+          const n = clamp(0, 1, 1 - Math.hypot(ex, ey));
+          const opacity = sim.filterT * (INACTIVE_OPACITY + (1 - INACTIVE_OPACITY) * n);
+          const m = mediaParams(clamp(-1, 1, fx / (W / 2)), clamp(-1, 1, fy / (H / 2)), sim.vx, sim.vy);
           cell.style.zIndex = String(Math.round(n * 10));
           cell.classList.toggle("is-center", n > 0.5);
 
+          if (optics) {
+            // WebGL draws the cell through the lens; the invisible DOM cell covers the
+            // projected box for the cursor caption and clicks.
+            const r = projectRect(fx, fy, scw, sch, lens, optics);
+            cell.style.transform = `translate3d(${W / 2 + r.x - cw / 2}px, ${H / 2 + r.y - ch / 2}px, 0) scale(${r.w / cw}, ${r.h / ch})`;
+            cell.style.opacity = "0";
+            const img = colourRefs.current[k]?.querySelector("img");
+            if (img) {
+              lensTiles.push({ img, cx: fx, cy: fy, w: scw, h: sch, opacity, colour: n, mediaX: m.x, mediaY: m.y, mediaScale: m.scale });
+            }
+            continue;
+          }
+
+          cell.style.transform = `translate3d(${W / 2 + fx - cw / 2}px, ${H / 2 + fy - ch / 2}px, 0) scale(${s * ls})`;
+          cell.style.opacity = String(opacity);
           const colour = colourRefs.current[k];
           if (colour) colour.style.opacity = String(n);
           const media = mediaRefs.current[k];
-          if (media) {
-            const nxn = clamp(-1, 1, (cx - W / 2) / (W / 2));
-            const nyn = clamp(-1, 1, (cy - H / 2) / (H / 2));
-            media.style.transform = mediaTransform(nxn, nyn, sim.vx, sim.vy);
-          }
+          if (media) media.style.transform = mediaTransform(m);
         }
+      }
+
+      if (optics && lensR) {
+        lensTiles.sort((a, b) => a.colour - b.colour); // centre cell on top
+        lensR.draw(lensTiles, lens);
+        lensDrawn = true;
+      } else if (lensDrawn) {
+        lensRenderer?.clear();
+        lensDrawn = false;
       }
 
       if (changed) {
@@ -326,8 +378,9 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
     const onMove = (e: PointerEvent) => {
       if (!sim.dragging || e.pointerId !== pointerId) return;
-      const dx = -(e.clientX - lastX) / cw;
-      const dy = -(e.clientY - lastY) / ch;
+      const ls = lensCellScale(sim.lens);
+      const dx = -(e.clientX - lastX) / (cw * ls);
+      const dy = -(e.clientY - lastY) / (ch * ls);
       sim.tx += dx;
       sim.ty += dy;
       const now = performance.now();
@@ -348,8 +401,13 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
       // A click on a side cell centres it.
       if (Math.hypot(e.clientX - downX, e.clientY - downY) < 5 && performance.now() - downT < 400) {
-        sim.tx = Math.round(sim.px + (e.clientX - W / 2) / cw);
-        sim.ty = Math.round(sim.py + (e.clientY - H / 2) / ch);
+        const optics = currentOptics();
+        const [fx, fy] = optics
+          ? unprojectPoint(e.clientX - W / 2, e.clientY - H / 2, sim.lens, optics)
+          : [e.clientX - W / 2, e.clientY - H / 2];
+        const ls = lensCellScale(sim.lens);
+        sim.tx = Math.round(sim.px + fx / (cw * ls));
+        sim.ty = Math.round(sim.py + fy / (ch * ls));
         wake();
         return;
       }
@@ -457,13 +515,22 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
         });
       },
       setFisheye(on) {
-        const vignette = vignetteRef.current;
-        animate(sim.lens, on ? 1 : 0, {
-          duration: 0.9,
-          ease: ease.power2InOut,
-          onUpdate: (v) => {
-            sim.lens = v;
-            if (vignette) vignette.style.opacity = String(v);
+        const target = on ? 1 : 0;
+        lensMorph?.stop();
+        const from = sim.lens;
+        const duration = LENS_MORPH_S * Math.abs(target - from);
+        if (!duration) return;
+        lensMorph = animate(0, 1, {
+          duration,
+          ease: "linear",
+          onUpdate: (p) => {
+            sim.lens = from + (target - from) * viewMoveEase(p);
+            root.style.setProperty("--lens-amount", String(sim.lens));
+            render();
+          },
+          onComplete: () => {
+            sim.lens = target;
+            root.style.setProperty("--lens-amount", String(target));
             render();
           },
         });
@@ -485,6 +552,8 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       cancelAnimationFrame(sim.raf);
       window.clearTimeout(settleTimer);
       morph?.stop();
+      lensMorph?.stop();
+      lensRenderer?.dispose();
       root.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
@@ -588,7 +657,8 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
             );
           }),
         )}
-        <div className="stage-vignette" ref={vignetteRef} aria-hidden="true" />
+        <canvas className="lens-canvas" ref={canvasRef} aria-hidden="true" />
+        <div className="stage-vignette" aria-hidden="true" />
       </div>
 
       {/* Edge rulers */}

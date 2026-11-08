@@ -27,14 +27,21 @@ export function followSpeed(current: number, instant: number, dt: number) {
  * nx/ny: tile position from the screen centre (-1..1); vx/vy: smoothed speed in cells/s
  * in the direction the content scrolls (positive = tiles moving left / up).
  */
-export function mediaTransform(nx: number, ny: number, vx: number, vy: number) {
+export function mediaParams(nx: number, ny: number, vx: number, vy: number) {
   const lagX = clamp(-MOTION_LAG_PCT, MOTION_LAG_PCT, vx * MOTION_LAG_PER_CELL_S);
   const lagY = clamp(-MOTION_LAG_PCT, MOTION_LAG_PCT, vy * MOTION_LAG_PER_CELL_S);
   const speed = Math.min(1, Math.hypot(vx, vy) / MOTION_FULL_SPEED);
-  const x = -nx * PARALLAX_PCT + lagX;
-  const y = -ny * PARALLAX_PCT + lagY;
-  return `translate3d(${x}%, ${y}%, 0) scale(${PARALLAX_SCALE * (1 + MOTION_ZOOM * speed)})`;
+  return {
+    x: (-nx * PARALLAX_PCT + lagX) / 100, // fraction of the tile
+    y: (-ny * PARALLAX_PCT + lagY) / 100,
+    scale: PARALLAX_SCALE * (1 + MOTION_ZOOM * speed),
+  };
 }
+
+export function mediaTransform(m: ReturnType<typeof mediaParams>) {
+  return `translate3d(${m.x * 100}%, ${m.y * 100}%, 0) scale(${m.scale})`;
+}
+
 export const VIEW_MOVE_S = 1.6; // slider ⇄ grid morph
 export const VIEW_ZOOM = 0.75; // grid cell = slider tile × this
 export const BAND_STAGGER_S = 0.08;
@@ -92,3 +99,6 @@ export function nearestPos(pos: number, index: number, n: number) {
   const cur = wrap(0, n, pos);
   return Math.round(pos + wrap(-n / 2, n / 2, index - cur));
 }
+
+/** Lens on/off morph: 1.6s × distance, sextic ease (the reference's LENS_MORPH_S). */
+export const LENS_MORPH_S = VIEW_MOVE_S;
