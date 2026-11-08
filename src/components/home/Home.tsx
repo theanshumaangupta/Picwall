@@ -52,6 +52,10 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   const [sliderActive, setSliderActive] = useState(true);
   const [orientation, setOrientation] = useState<Orientation>("horizontal");
   const [gridOn, setGridOn] = useState(false);
+  // Drawn-ness is separate from active-ness: the outgoing view stays on screen underneath
+  // until the incoming view reports its images are painted, so a switch never shows a blank frame.
+  const [sliderShown, setSliderShown] = useState(true);
+  const [gridShown, setGridShown] = useState(false);
   const [gridMounted, setGridMounted] = useState(false);
   // Project the incoming view centres on; the outgoing view's current project.
   const [centerProject, setCenterProject] = useState(0);
@@ -73,7 +77,8 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   const enterGrid = useCallback(() => {
     setCenterProject(activeProject.current);
     setGridMounted(true);
-    setSliderActive(false);
+    setSliderActive(false); // stays shown until the grid has painted
+    setGridShown(true);
     setGridOn(true);
   }, []);
 
@@ -95,9 +100,13 @@ export function Home({ entered, sound, onToggleSound }: Props) {
   const onGridExited = useCallback(() => {
     if (viewRef.current === "grid") return;
     setCenterProject(activeProject.current);
-    setSliderActive(true);
+    setSliderShown(true);
+    setSliderActive(true); // the grid stays shown until the slider has painted
     if (viewRef.current === "list") setOrientation("vertical");
   }, []);
+
+  const onSliderShown = useCallback(() => setGridShown(false), []);
+  const onGridShown = useCallback(() => setSliderShown(false), []);
 
   const onRotated = useCallback(
     (o: Orientation) => {
@@ -167,6 +176,8 @@ export function Home({ entered, sound, onToggleSound }: Props) {
         onActiveChange={onActiveChange}
         orientation={orientation}
         onRotated={onRotated}
+        shown={sliderShown}
+        onShown={onSliderShown}
       />
       {gridMounted && (
         <GridView
@@ -176,6 +187,8 @@ export function Home({ entered, sound, onToggleSound }: Props) {
           fisheye={fisheye}
           onActiveChange={onActiveChange}
           onExited={onGridExited}
+          shown={gridShown}
+          onShown={onGridShown}
         />
       )}
       <CursorCaption />

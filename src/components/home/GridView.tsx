@@ -9,8 +9,6 @@ import { playTick } from "@/lib/sound";
 import {
   IMAGE_SIZES,
   INACTIVE_OPACITY,
-  PARALLAX_PCT,
-  PARALLAX_SCALE,
   VIEW_MOVE_S,
   VIEW_ZOOM,
   bandOffset,
@@ -18,9 +16,12 @@ import {
   cellSize,
   clamp,
   easeFactor,
+  followSpeed,
+  mediaTransform,
   mod,
   oddAtLeast,
   viewMoveEase,
+  whenTilesPainted,
   wrap,
 } from "./gallery";
 
@@ -62,6 +63,7 @@ function cellProjects(pool: Pool, items: number[], px: number, py: number) {
 type Controller = {
   render: () => void;
   setActive: (on: boolean, centerProject: number) => void;
+  setShown: (shown: boolean) => void;
   setItems: (items: number[]) => void;
   setFisheye: (on: boolean) => void;
 };
@@ -75,9 +77,13 @@ type Props = {
   onActiveChange: (project: number) => void;
   /** Fired when the leaving morph has finished, so the slider can take over. */
   onExited: () => void;
+  /** Keep drawing after the leaving morph, until the slider has painted (see SliderView). */
+  shown: boolean;
+  /** Fired once after becoming active, when the visible cells' images are painted. */
+  onShown: () => void;
 };
 
-export function GridView({ items, active, centerProject, fisheye, onActiveChange, onExited }: Props) {
+export function GridView({ items, active, centerProject, fisheye, onActiveChange, onExited, shown, onShown }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const vignetteRef = useRef<HTMLDivElement>(null);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -91,11 +97,13 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
   });
   const ctrl = useRef<Controller | null>(null);
   const shownActive = useRef(false);
+  const wasShown = useRef(false);
   const fisheyeShown = useRef(false);
   const itemsRef = useRef(items);
-  const cbRef = useRef({ onActiveChange, onExited });
+  const cbRef = useRef({ onActiveChange, onExited, onShown });
+  const pendingShown = useRef(false);
   useLayoutEffect(() => {
-    cbRef.current = { onActiveChange, onExited };
+    cbRef.current = { onActiveChange, onExited, onShown };
   });
 
   const [pool, setPool] = useState<Pool>({ nx: 9, ny: 5 });
@@ -117,11 +125,14 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       morphT: 0, // seconds into the slider → grid morph (0 = slider layout)
       morphTotal: VIEW_MOVE_S,
       active: false,
+      shown: false,
       filterT: 1,
       lens: 0,
       dragging: false,
       lastActive: -1,
       lastTickKey: "",
+      vx: 0, // smoothed scroll speed in cells/s per axis (drives the image lag)
+      vy: 0,
       raf: 0,
       last: 0,
     };
@@ -162,7 +173,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       const ys = offsets(ny);
       const M = sim.items.length || 1;
       const lens = sim.lens;
-      const visibleRoot = sim.active || sim.morphT > 0;
+      const visibleRoot = sim.active || sim.morphT > 0 || sim.shown;
       root.style.visibility = visibleRoot ? "visible" : "hidden";
 
       // Zoom from slider tile size (1 / VIEW_ZOOM) down to grid size as the morph runs.
@@ -215,7 +226,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
           if (media) {
             const nxn = clamp(-1, 1, (cx - W / 2) / (W / 2));
             const nyn = clamp(-1, 1, (cy - H / 2) / (H / 2));
-            media.style.transform = `translate3d(${-nxn * PARALLAX_PCT}%, ${-nyn * PARALLAX_PCT}%, 0) scale(${PARALLAX_SCALE})`;
+            media.style.transform = mediaTransform(nxn, nyn, sim.vx, sim.vy);
           }
         }
       }
@@ -244,8 +255,12 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
     const step = (dt: number) => {
       const f = easeFactor(dt);
-      sim.px += (sim.tx - sim.px) * f;
-      sim.py += (sim.ty - sim.py) * f;
+      const dx = (sim.tx - sim.px) * f;
+      const dy = (sim.ty - sim.py) * f;
+      sim.px += dx;
+      sim.py += dy;
+      sim.vx = followSpeed(sim.vx, dt > 0 ? dx / dt : 0, dt);
+      sim.vy = followSpeed(sim.vy, dt > 0 ? dy / dt : 0, dt);
       if (!sim.dragging && Math.abs(sim.tx - sim.px) < 5e-4 && Math.abs(sim.ty - sim.py) < 5e-4) {
         sim.px = sim.tx;
         sim.py = sim.ty;
@@ -255,7 +270,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       sim.lastTickKey = key;
     };
 
-    const busy = () => sim.dragging || sim.px !== sim.tx || sim.py !== sim.ty;
+    const busy = () => sim.dragging || sim.px !== sim.tx || sim.py !== sim.ty || sim.vx !== 0 || sim.vy !== 0;
 
     const frame = (now: number) => {
       const dt = Math.min(0.1, (now - sim.last) / 1000);
@@ -373,6 +388,10 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
 
     ctrl.current = {
       render,
+      setShown(on) {
+        sim.shown = on;
+        render();
+      },
       setActive(on, centerProject) {
         sim.active = on;
         root.classList.toggle("is-active", on);
@@ -387,6 +406,7 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
           sim.py = sim.ty = 0;
           sim.lastActive = -1;
           sim.lastTickKey = "";
+          pendingShown.current = true;
           measure();
         } else {
           sim.tx = sim.px = Math.round(sim.tx);
@@ -476,12 +496,19 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
       // A remount starts from a fresh, inactive state, so the effects below must re-apply.
       shownActive.current = false;
       fisheyeShown.current = false;
+      wasShown.current = false;
     };
   }, []);
 
   useLayoutEffect(() => {
     ctrl.current?.render();
   }, [pool]);
+
+  useLayoutEffect(() => {
+    if (wasShown.current === shown) return;
+    wasShown.current = shown;
+    ctrl.current?.setShown(shown);
+  }, [shown]);
 
   const centerRef = useRef(centerProject);
   useLayoutEffect(() => {
@@ -492,6 +519,22 @@ export function GridView({ items, active, centerProject, fisheye, onActiveChange
     shownActive.current = active;
     ctrl.current?.setActive(active, centerRef.current);
   }, [active]);
+
+  // Handoff: once the entering cells have their images painted, the slider can hide.
+  useEffect(() => {
+    if (!pendingShown.current || !active) return;
+    // The flag clears only when the wait completes, so a re-run (new images mounted,
+    // or React re-running effects in development) starts a fresh wait instead of dropping it.
+    let cancelled = false;
+    whenTilesPainted(cellRefs.current).then(() => {
+      if (cancelled) return;
+      pendingShown.current = false;
+      cbRef.current.onShown();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, cellProj]);
 
   useEffect(() => {
     if (itemsRef.current === items) return;

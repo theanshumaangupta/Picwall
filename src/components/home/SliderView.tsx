@@ -10,15 +10,16 @@ import {
   COMPACT_BP,
   IMAGE_SIZES,
   INACTIVE_OPACITY,
-  PARALLAX_PCT,
-  PARALLAX_SCALE,
   VIEW_MOVE_S,
   cellSize,
   clamp,
+  followSpeed,
+  mediaTransform,
   mod,
   nearestPos,
   oddAtLeast,
   viewMoveEase,
+  whenTilesPainted,
   wrap,
 } from "./gallery";
 
@@ -64,6 +65,7 @@ type Controller = {
   setFisheye: (on: boolean) => void;
   intro: () => void;
   setActive: (active: boolean, centerProject: number) => void;
+  setShown: (shown: boolean) => void;
   setOrientation: (o: Orientation) => void;
 };
 
@@ -91,6 +93,13 @@ type Props = {
   /** "vertical" is the list view: the row turns into a column (the reference's `rot`). */
   orientation: Orientation;
   onRotated: (o: Orientation) => void;
+  /**
+   * Whether the tiles are drawn. Separate from `active` so the outgoing view can stay
+   * on screen, underneath, until the incoming one has painted its images.
+   */
+  shown: boolean;
+  /** Fired once after becoming active, when the visible tiles' images are painted. */
+  onShown: () => void;
 };
 
 export function SliderView({
@@ -102,6 +111,8 @@ export function SliderView({
   onActiveChange,
   orientation,
   onRotated,
+  shown,
+  onShown,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
@@ -122,9 +133,12 @@ export function SliderView({
   const shownOrientation = useRef<Orientation>("horizontal");
   const onActiveRef = useRef(onActiveChange);
   const onRotatedRef = useRef(onRotated);
+  const onShownRef = useRef(onShown);
+  const pendingShown = useRef(false);
   useEffect(() => {
     onActiveRef.current = onActiveChange;
     onRotatedRef.current = onRotated;
+    onShownRef.current = onShown;
   });
 
   // Slot count depends on the viewport; 7 covers a typical desktop for the server render.
@@ -145,6 +159,9 @@ export function SliderView({
       filterT: 1,
       lens: 0,
       rot: 0, // 0 = row (slider), 1 = column (list)
+      speed: 0, // smoothed scroll speed in cells/s (drives the image lag)
+      prevPos: 0,
+      prevIntroX: 0,
       introX: 3 * window.innerWidth,
       introFrom: 3 * window.innerWidth,
       introRunning: false,
@@ -232,7 +249,7 @@ export function SliderView({
         if (media) {
           const nx = clamp(-1, 1, sx / (W / 2));
           const ny = clamp(-1, 1, sy / (H / 2));
-          media.style.transform = `translate3d(${-nx * PARALLAX_PCT}%, ${-ny * PARALLAX_PCT}%, 0) scale(${PARALLAX_SCALE})`;
+          media.style.transform = mediaTransform(nx, ny, sim.speed * rotCos, sim.speed * rotSin);
         }
       }
 
@@ -357,6 +374,13 @@ export function SliderView({
       sim.pos += (sim.target - sim.pos) * (1 - Math.exp(-dt * 7));
       if (Math.abs(sim.target - sim.pos) < 5e-4 && !sim.dragging) sim.pos = sim.target;
 
+      // Scroll speed, including the intro fly-in. Jumps (view switches, filters) are ignored.
+      let moved = sim.pos - sim.prevPos - (sim.introX - sim.prevIntroX) / cell.w;
+      if (Math.abs(moved) > 2) moved = 0;
+      sim.speed = followSpeed(sim.speed, dt > 0 ? moved / dt : 0, dt);
+      sim.prevPos = sim.pos;
+      sim.prevIntroX = sim.introX;
+
       // A tick for every ruler mark that crosses the playhead.
       const o = Math.round(sim.pos);
       const m = clamp(-3, 3, Math.round((sim.pos - o) * (TICK_PITCH / 14)));
@@ -365,7 +389,7 @@ export function SliderView({
       sim.lastTick = f;
     };
 
-    const busy = () => sim.introRunning || sim.dragging || sim.pos !== sim.target;
+    const busy = () => sim.introRunning || sim.dragging || sim.pos !== sim.target || sim.speed !== 0;
 
     const frame = (now: number) => {
       const dt = Math.min(0.1, (now - sim.last) / 1000);
@@ -521,7 +545,8 @@ export function SliderView({
           },
           onComplete: () => {
             sim.items = next;
-            sim.pos = sim.target = 0;
+            sim.pos = sim.target = sim.prevPos = 0;
+            sim.speed = 0;
             sim.lastTick = null;
             for (const g of groupRefs.current) if (g) g.project = -1;
             sim.lastDialProject = -1;
@@ -597,6 +622,10 @@ export function SliderView({
           },
         });
       },
+      setShown(on) {
+        sim.fade = on ? 1 : 0;
+        renderTiles();
+      },
       // Views swap instantly: the grid's morph starts from (and ends on) exactly this row of tiles.
       setActive(on, centerProject) {
         sim.interactive = on;
@@ -604,14 +633,16 @@ export function SliderView({
           const k = sim.items.indexOf(centerProject);
           if (k >= 0) sim.pos = sim.target = nearestPos(sim.pos, k, sim.items.length);
           sim.lastTick = null;
-          sim.fade = 1;
+          pendingShown.current = true;
         } else {
           sim.dragging = false;
           root.classList.remove("is-dragging");
           sim.target = Math.round(sim.target);
           sim.pos = sim.target;
-          sim.fade = 0;
         }
+        // A re-centre is a jump, not movement: keep it out of the image lag.
+        sim.prevPos = sim.pos;
+        sim.speed = 0;
         renderTiles();
         renderTicker();
         renderVTicker();
@@ -688,6 +719,13 @@ export function SliderView({
   useLayoutEffect(() => {
     centerRef.current = centerProject;
   });
+  const wasShown = useRef(shown);
+  useLayoutEffect(() => {
+    if (wasShown.current === shown) return;
+    wasShown.current = shown;
+    ctrl.current?.setShown(shown);
+  }, [shown]);
+
   const wasActive = useRef(active);
   useLayoutEffect(() => {
     if (wasActive.current === active) return;
@@ -704,6 +742,23 @@ export function SliderView({
   useEffect(() => {
     if (entered) ctrl.current?.intro();
   }, [entered]);
+
+  // Handoff: once active and drawn (and any re-centred tiles have their new images
+  // mounted), wait for those images to paint before the previous view is let go.
+  useEffect(() => {
+    if (!pendingShown.current || !active || !shown) return;
+    // The flag clears only when the wait completes, so a re-run (new images mounted,
+    // or React re-running effects in development) starts a fresh wait instead of dropping it.
+    let cancelled = false;
+    whenTilesPainted(tileRefs.current).then(() => {
+      if (cancelled) return;
+      pendingShown.current = false;
+      onShownRef.current();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, shown, slotProj]);
 
   return (
     <div className={`slider-view${active ? " is-active" : ""}`} ref={rootRef} aria-hidden={!active}>

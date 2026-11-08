@@ -4,8 +4,37 @@
 export const COMPACT_BP = 760;
 export const CELL_RATIO = 587.67 / 876.58; // tile w / h
 export const INACTIVE_OPACITY = 0.5;
-export const PARALLAX_PCT = 6; // image travel inside a tile, % of tile size
-export const PARALLAX_SCALE = 1 / 0.88;
+// ---- Image parallax inside tiles ----
+// The reference uses ±6% (UV scale 0.88). Ours is stronger and also reacts to speed:
+// images lag behind the motion and zoom in slightly, then settle when the tiles stop.
+// Worst case shift (position + lag) stays inside the overflow the scale provides.
+export const PARALLAX_SCALE = 1.28; // ±14% of tile size available on each side
+export const PARALLAX_PCT = 9; // position-based travel at the screen edge
+export const MOTION_LAG_PCT = 4.5; // extra travel at full speed, opposite to the motion
+export const MOTION_LAG_PER_CELL_S = 1.6; // % of lag per (cell / second) of speed
+export const MOTION_ZOOM = 0.05; // extra zoom at full speed
+export const MOTION_FULL_SPEED = 4; // cells / second that counts as "full speed"
+export const MOTION_SMOOTHING = 9; // how quickly the lag follows speed changes (1/s)
+
+/** Smoothed speed tracker, in cells per second, for one axis. */
+export function followSpeed(current: number, instant: number, dt: number) {
+  const next = current + (instant - current) * easeFactor(dt, MOTION_SMOOTHING);
+  return Math.abs(next) < 1e-3 ? 0 : next;
+}
+
+/**
+ * Transform for the image layer inside a tile.
+ * nx/ny: tile position from the screen centre (-1..1); vx/vy: smoothed speed in cells/s
+ * in the direction the content scrolls (positive = tiles moving left / up).
+ */
+export function mediaTransform(nx: number, ny: number, vx: number, vy: number) {
+  const lagX = clamp(-MOTION_LAG_PCT, MOTION_LAG_PCT, vx * MOTION_LAG_PER_CELL_S);
+  const lagY = clamp(-MOTION_LAG_PCT, MOTION_LAG_PCT, vy * MOTION_LAG_PER_CELL_S);
+  const speed = Math.min(1, Math.hypot(vx, vy) / MOTION_FULL_SPEED);
+  const x = -nx * PARALLAX_PCT + lagX;
+  const y = -ny * PARALLAX_PCT + lagY;
+  return `translate3d(${x}%, ${y}%, 0) scale(${PARALLAX_SCALE * (1 + MOTION_ZOOM * speed)})`;
+}
 export const VIEW_MOVE_S = 1.6; // slider ⇄ grid morph
 export const VIEW_ZOOM = 0.75; // grid cell = slider tile × this
 export const BAND_STAGGER_S = 0.08;
@@ -40,6 +69,22 @@ export function bandOffset(t: number, band: number, dist: number) {
 /** Morph length when the outermost band is `maxBand` rows away. */
 export function bandedDuration(maxBand: number) {
   return VIEW_MOVE_S + BAND_STAGGER_S * Math.max(0, maxBand - 1);
+}
+
+/**
+ * Resolves once the images inside the currently visible tiles are decoded and a frame
+ * with them has been painted (or after `timeoutMs`, so a slow image never blocks a view
+ * switch). Used to hand over between views without a blank frame.
+ */
+export function whenTilesPainted(tiles: (HTMLElement | null)[], timeoutMs = 800): Promise<void> {
+  const imgs = tiles
+    .filter((t): t is HTMLElement => !!t && t.style.visibility === "visible")
+    .flatMap((t) => Array.from(t.querySelectorAll("img")));
+  const decoded = Promise.all(imgs.map((img) => img.decode().catch(() => undefined)));
+  const timeout = new Promise<void>((r) => window.setTimeout(r, timeoutMs));
+  return Promise.race([decoded, timeout]).then(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  );
 }
 
 /** Position nearest to `pos` whose wrapped index shows `index` (for an `n`-item loop). */
